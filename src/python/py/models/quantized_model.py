@@ -311,6 +311,45 @@ class QuantizedModel:
                             # model.layers.layer_id.mlp.down_proj.bias
                             # module.mlp.down_proj.add_bias()
                             module.mlp.down_proj.bias = tensor
+                        # when loading from a Phi3 model, some elements need to be split
+                        elif bool(re.match(r"^model.layers\.\d+\.self_attn.qkv_proj\.g_idx$", name)):
+                            module.self_attn.q_proj.in_features = tensor.shape[0]
+                            module.self_attn.q_proj.g_idx = tensor
+                            module.self_attn.k_proj.in_features = tensor.shape[0]
+                            module.self_attn.k_proj.g_idx = tensor
+                            module.self_attn.v_proj.in_features = tensor.shape[0]
+                            module.self_attn.v_proj.g_idx = tensor
+                        elif bool(re.match(r"^model.layers\.\d+\.self_attn.qkv_proj\.qweight$", name)):
+                            module.self_attn.q_proj.out_features = tensor.shape[1]//3
+                            module.self_attn.q_proj.qweight = tensor[:, :tensor.shape[1]//3]
+                            module.self_attn.k_proj.out_features = tensor.shape[1]//3
+                            module.self_attn.k_proj.qweight = tensor[:, tensor.shape[1]//3:2*tensor.shape[1]//3]
+                            module.self_attn.v_proj.out_features = tensor.shape[1]//3
+                            module.self_attn.v_proj.qweight = tensor[:, 2*tensor.shape[1]//3:]
+                        elif bool(re.match(r"^model.layers\.\d+\.self_attn.qkv_proj\.scales$", name)):
+                            module.self_attn.q_proj.scales = tensor[:, :tensor.shape[1]//3]
+                            module.self_attn.k_proj.scales = tensor[:, tensor.shape[1]//3:2*tensor.shape[1]//3]
+                            module.self_attn.v_proj.scales = tensor[:, 2*tensor.shape[1]//3:]
+                        elif bool(re.match(r"^model.layers\.\d+\.self_attn.qkv_proj\.qzeros$", name)):
+                            module.self_attn.q_proj.qzeros = tensor[:, :tensor.shape[1]//3]
+                            module.self_attn.k_proj.qzeros = tensor[:, tensor.shape[1]//3:2*tensor.shape[1]//3]
+                            module.self_attn.v_proj.qzeros = tensor[:, 2*tensor.shape[1]//3:]
+                        elif bool(re.match(r"^model.layers\.\d+\.mlp.gate_up_proj\.g_idx$", name)):
+                            module.mlp.up_proj.in_features = tensor.shape[0]
+                            module.mlp.gate_proj.in_features = tensor.shape[0]
+                            module.mlp.gate_proj.g_idx = tensor
+                            module.mlp.up_proj.g_idx = tensor
+                        elif bool(re.match(r"^model.layers\.\d+\.mlp.gate_up_proj\.qweight$", name)):
+                            module.mlp.gate_proj.out_features = tensor.shape[1]//2
+                            module.mlp.up_proj.out_features = tensor.shape[1]//2
+                            module.mlp.gate_proj.qweight = tensor[:, :tensor.shape[1]//2]
+                            module.mlp.up_proj.qweight = tensor[:, tensor.shape[1]//2:]
+                        elif bool(re.match(r"^model.layers\.\d+\.mlp.gate_up_proj\.qzeros$", name)):
+                            module.mlp.gate_proj.qzeros = tensor[:, :tensor.shape[1]//2]
+                            module.mlp.up_proj.qzeros = tensor[:, tensor.shape[1]//2:]
+                        elif bool(re.match(r"^model.layers\.\d+\.mlp.gate_up_proj\.scales$", name)):
+                            module.mlp.gate_proj.scales = tensor[:, :tensor.shape[1]//2]
+                            module.mlp.up_proj.scales = tensor[:, tensor.shape[1]//2:]
                         else:
                             raise NotImplementedError(f"{name} in your quantized model is not recognized.")
                 
