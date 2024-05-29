@@ -261,6 +261,7 @@ class Model:
         print(f"Saving processing files in {out_dir} for GenAI")
         tokenizer.save_pretrained(out_dir)
 
+
     def save_model(self, out_dir):
         print(f"Saving ONNX model in {out_dir}")
         gc.collect()
@@ -1633,7 +1634,7 @@ class Model:
 
         basename = "/model/pos_ids_reformat"
         shape_name = f"{basename}/Shape"
-        self.make_shape(shape_name, "input_ids", shape=[2])
+        self.make_shape(shape_name, root_input="input_ids" if not self.exclude_embeds else "inputs_embeds", shape=[2] if not self.exclude_embeds else [3])
         gather_name = f"{basename}/Gather"
         gather_inputs = [f"{shape_name}/output_0", "/model/constants/TensorProto.INT64/0D/1"]
         self.make_gather(gather_name, gather_inputs, axis=0)
@@ -1667,7 +1668,6 @@ class MistralModel(Model):
 class PhiModel(Model):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
-        # self.input_shapes["position_ids"] = [1]  # Note: This is optional and only needed if you want position_ids to be an int instead of a 2D tensor
         self.layernorm_attrs["simple"] = False
         self.rotemb_attrs["num_heads"] = self.num_attn_heads
         self.rotemb_attrs["rotary_embedding_dim"] = int(self.head_size * self.rotemb_attrs["partial_rotary_factor"])
@@ -1701,6 +1701,42 @@ class GemmaModel(MistralModel):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
         self.embed_attrs["normalize"] = True
         self.layernorm_attrs["add_offset"] = 1
+
+
+class Phi3Mini4KModel(MistralModel):
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+    def make_attention(self, layer_id, attention, root_input, **kwargs):
+        if not self.is_quantized:
+            q_size = self.num_attn_heads * self.head_size
+            kv_size = self.num_kv_heads * self.head_size
+
+            attention.q_proj = torch.nn.Linear(in_features=q_size, out_features=q_size)
+            attention.q_proj.weight = torch.nn.Parameter(attention.qkv_proj.weight[: q_size, :])
+            attention.q_proj.bias = None if attention.qkv_proj.bias is None else torch.nn.Parameter(attention.qkv_proj.bias[: q_size])
+
+            attention.k_proj = torch.nn.Linear(in_features=q_size, out_features=kv_size)
+            attention.k_proj.weight = torch.nn.Parameter(attention.qkv_proj.weight[q_size : q_size + kv_size, :])
+            attention.k_proj.bias = None if attention.qkv_proj.bias is None else torch.nn.Parameter(attention.qkv_proj.bias[q_size : q_size + kv_size])
+
+            attention.v_proj = torch.nn.Linear(in_features=q_size, out_features=kv_size)
+            attention.v_proj.weight = torch.nn.Parameter(attention.qkv_proj.weight[q_size + kv_size :, :])
+            attention.v_proj.bias = None if attention.qkv_proj.bias is None else torch.nn.Parameter(attention.qkv_proj.bias[q_size + kv_size :])
+
+            del attention.qkv_proj
+        super().make_attention(layer_id, attention, root_input, **kwargs)
+
+    def make_mlp_proj(self, layer_id, mlp, root_input):
+        if not self.is_quantized:
+            mlp.gate_proj = torch.nn.Linear(in_features=self.hidden_size, out_features=self.intermediate_size)
+            mlp.gate_proj.weight = torch.nn.Parameter(mlp.gate_up_proj.weight[ : self.intermediate_size, :])
+
+            mlp.up_proj = torch.nn.Linear(in_features=self.hidden_size, out_features=self.intermediate_size)
+            mlp.up_proj.weight = torch.nn.Parameter(mlp.gate_up_proj.weight[self.intermediate_size :, :])
+
+            del mlp.gate_up_proj
+        super().make_mlp_proj(layer_id, mlp, root_input)
 
 
 def parse_extra_options(kv_items):
@@ -1741,6 +1777,8 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
             onnx_model = MistralModel(config, io_dtype, precision, execution_provider, cache_dir, extra_options)
         elif config.architectures[0] == "PhiForCausalLM":
             onnx_model = PhiModel(config, io_dtype, precision, execution_provider, cache_dir, extra_options)
+        elif config.architectures[0] == "Phi3ForCausalLM" and config.max_position_embeddings == 4096:
+            onnx_model = Phi3Mini4KModel(config, io_dtype, precision, execution_provider, cache_dir, extra_options)
         else:
             raise NotImplementedError(f"The {hf_name} model is not currently supported.")
 
